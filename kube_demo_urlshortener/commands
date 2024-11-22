@@ -1,0 +1,83 @@
+# Creating our EKS Cluster via AWS CLI.
+# Need to change the cluster name "kubedemo21"
+# Need to modify subnets based off of terraform output
+eksctl create cluster kubedemo21 --vpc-public-subnets=subnet-09252bb1190f580df,subnet-0b391735647458890 --vpc-private-subnets=subnet-0055d027848e1364a,subnet-0f03cc4aba64fa79e --without-nodegroup
+
+# Creating our Node Group
+# Change the cluster name if needed
+eksctl create nodegroup --cluster kubedemo21 --name kubedemo-ng --node-type t2.medium --nodes 2 --nodes-min 1 --nodes-max 10
+
+# Associate IAM OIDC provider
+# Change cluster name
+eksctl utils associate-iam-oidc-provider --region=us-east-1 --cluster=kubedemo21 --approve
+
+# Download IAM Policy JSON file
+curl -O https://raw.githubusercontent.com/kura-labs-org/Template/main/iam_policy.json
+
+# Create IAM Policy
+# Replace ARN with current ARN. Make sure AWS Account ID is correct account ID
+aws iam create-policy --policy-name AWSLoadBalancerControllerIAMPolicy --policy-document file://iam_policy.json
+
+# Create IAM Service Account
+# Change cluster name
+# Replace AWS Account ID with personal AWS Account ID
+eksctl create iamserviceaccount \
+  --cluster=kubedemo21 \
+  --namespace=kube-system \
+  --name=aws-load-balancer-controller \
+  --attach-policy-arn=arn:aws:iam::008971635594:policy/AWSLoadBalancerControllerIAMPolicy \
+  --approve
+
+# Install cert-manager first and ensure it's ready
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
+
+# Wait for cert-manager to be ready - increased timeout and added verification
+echo "Waiting for cert-manager pods to be ready..."
+kubectl wait --for=condition=ready pod -l app=cert-manager -n cert-manager --timeout=300s
+kubectl wait --for=condition=ready pod -l app=cainjector -n cert-manager --timeout=300s
+kubectl wait --for=condition=ready pod -l app=webhook -n cert-manager --timeout=300s
+
+# Apply CRDs first
+kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller/crds"
+sleep 30
+
+# Create the self-signed issuer first
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: aws-load-balancer-selfsigned-issuer
+  namespace: kube-system
+spec:
+  selfSigned: {}
+EOF
+
+# Wait for issuer to be ready
+sleep 10
+
+# Download Yaml
+curl -O https://raw.githubusercontent.com/djtoler/day1yamlfiles/refs/heads/main/v2_4_7_full.yaml
+
+# Apply load balancer file 
+# Change line 804 to current cluster name
+kubectl apply -f v2_4_7_full.yaml
+
+# Apply remaining resources with increased delays
+curl -O https://raw.githubusercontent.com/djtoler/demo1/refs/heads/main/ingress_class.yaml
+kubectl apply -f ingress_class.yaml
+
+curl -O https://raw.githubusercontent.com/djtoler/demo1/refs/heads/main/deployment.yaml
+kubectl apply -f deployment.yaml
+
+curl -O https://raw.githubusercontent.com/djtoler/demo1/refs/heads/main/service.yaml
+kubectl apply -f service.yaml
+
+curl -O https://raw.githubusercontent.com/djtoler/demo1/refs/heads/main/ingress.yaml
+kubectl apply -f ingress.yaml
+
+# Wait and get Load Balancer DNS Name
+aws elbv2 describe-load-balancers --query 'LoadBalancers[*].[LoadBalancerName,DNSName]' --output text >> loadbalancerdns.txt
+
+
+#### CLEANUP COMMANDS
+eksctl delete cluster --name kubedemo21
