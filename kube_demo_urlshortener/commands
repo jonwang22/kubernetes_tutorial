@@ -39,6 +39,7 @@ kubectl wait --for=condition=ready pod -l app=webhook -n cert-manager --timeout=
 
 # Apply CRDs first
 kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller/crds"
+# github.com/aws/eks-charts/blob/master/stable/aws-load-balancer-controller/crds/
 sleep 30
 
 # Create the self-signed issuer first
